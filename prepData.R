@@ -1,6 +1,5 @@
 library(raster)
 library(socorro)
-library(igraph)
 
 setwd('~/Dropbox/Research/isingEcology')
 
@@ -38,7 +37,7 @@ prepDataIsing <- function(path) {
                          spin = as.vector(LambdaMat))
     
     ## create adjacency matrix that indicates adjacent cells
-    adj <- matrix(0, nrow = ncell(r), ncol = ncell(r))
+    adj <- diag(1, nrow = ncell(r), ncol = ncell(r))
     offDiag <- row(adj) - col(adj)
     
     ## adj matrix for 1 neighbor is:
@@ -51,51 +50,23 @@ prepDataIsing <- function(path) {
     
     ## 1 in ncol off diag in each direction
     adj[abs(offDiag) == ncol(r)] <- 1
-
     
-    foo <- graph_from_adjacency_matrix(adj)
-    plot(foo, layout = as.matrix(expand.grid(1:ncol(r), 1:nrow(r))), edge.arrow.size = 0.5)
+    ## `ego` contains the ego graph for successive orders
+    ego <- adj %*% adj + adj
+    ego[ego > 0] <- 1
     
-    bla <- adj %*% adj + adj
-    bla[bla > 0] <- 1
-    which(bla[1, ] == 1)
+    ## `egoMaster` will contain all ego graphs according to the rule:
+    ## ego graph of distance d = egoMaster <= d
+    egoMaster <- ego
     
-    ego(foo, 2, nodes = 1)
-    
-    
-    r <- raster(nrows = 6, ncols = 8)
-    edges <- adjacent(r, 1:ncell(r), directions = 4, sorted = TRUE)
-    edges <- edges[edges[, 2] - edges[, 1] != ncol(r) - 1, ]
-    laticeGraph <- graph_from_edgelist(edges)
-    write.table(as.matrix(as_adj(laticeGraph)), 'temp1.csv', sep = ',')
-    
-    par(mar = rep(1, 4))
-    image(1:ncol(r), 1:nrow(r), 
-          as.matrix(as_adj(laticeGraph)), axes = FALSE, col = c('white', 'black'))
-    
-    
-    plot(laticeGraph, layout = coordinates(r), edge.arrow.size = 1.5, 
-         edge.color = hsv(alpha = 0.3))
-    
-    
-    
-    
-    foo <- ego(laticeGraph, 2)
-    
-    foo[8, 1] <- 0
-    foo[16, 9] <- 0
-    foo[24, 17] <- 0
-    
-    goo <- foo %*% foo + foo
-    goo[goo > 0] <- 1
-    diag(goo) <- 0
-    par(mar = rep(0.1, 4))
-    plot(graph_from_adjacency_matrix(goo), layout = as.matrix(expand.grid(1:8, 1:3)), 
-         edge.arrow.size = 0.2, vertex.size = 0.5)
-    
-    ## calcualte correlation function for each spp: c(d) = < x_i * x_j > - < x >< x >
-    bla <- traverceEL(edges, 2)
-    head(bla[order(bla[, 1]), ])
+    ## higher order neighborhoods are a recursion of:
+    ## A2 = A1 %*% A1 + A1; for d = 2
+    ## A3 = A2 %*% A1 + A2; for d = 3, etc...
+    for(i in 2:round(sqrt(ncell(r)) / 2)) {
+        ego <- ego %*% adj + ego
+        ego[ego > 0] <- 1
+        egoMaster[ego == 1 & egoMaster == 0] <- i
+    }
     
 }
 
