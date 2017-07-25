@@ -1,5 +1,6 @@
 library(raster)
 library(socorro)
+library(Matrix)
 
 setwd('~/Dropbox/Research/isingEcology')
 
@@ -15,7 +16,6 @@ setwd('~/Dropbox/Research/isingEcology')
 #' }
 
 prepDataIsing <- function(path) {
-    browser()
     ## take only most recent census
     x <- read.csv(path, as.is = TRUE)
     x <- x[x$year == max(x$year), ]
@@ -37,23 +37,13 @@ prepDataIsing <- function(path) {
                          spin = as.vector(LambdaMat))
     
     ## create adjacency matrix that indicates adjacent cells
-    adj <- diag(1, nrow = ncell(r), ncol = ncell(r))
-    offDiag <- row(adj) - col(adj)
+    adj <- bandSparse(ncell(r), k = c(-ncol(r), -1, 0, 1, ncol(r)))
+    adj[(1:nrow(r)) * ncol(r), (1:(nrow(r))-1) * ncol(r) + 1] <- FALSE
+    adj[(1:(nrow(r) - 1)) * ncol(r) + 1, (1:nrow(r)) * ncol(r)] <- FALSE
     
-    ## adj matrix for 1 neighbor is:
-    ## 1 in one off diag in each direction
-    adj[abs(offDiag) == 1] <- 1
-    
-    ## 0 in the one off diag for every [i*ncol, i*ncol + 1] | [i*ncol + 1, i*ncol] cells
-    adj[(offDiag == 1 & row(adj) %in% ((1:nrow(r)) * ncol(r) + 1)) | 
-            (offDiag == -1 & col(adj) %in% ((1:nrow(r)) * ncol(r) + 1))] <- 0
-    
-    ## 1 in ncol off diag in each direction
-    adj[abs(offDiag) == ncol(r)] <- 1
-    
-    ## `ego` contains the ego graph for successive orders
-    ego <- adj %*% adj + adj
-    ego[ego > 0] <- 1
+    ## `ego` contains the ego graph for successive distances from the focal node
+    ego <- Diagonal(ncell(r)) %*% adj + adj
+    ego[which(ego > 0)] <- 1
     
     ## `egoMaster` will contain all ego graphs according to the rule:
     ## ego graph of distance d = egoMaster <= d
@@ -64,9 +54,24 @@ prepDataIsing <- function(path) {
     ## A3 = A2 %*% A1 + A2; for d = 3, etc...
     for(i in 2:round(sqrt(ncell(r)) / 2)) {
         ego <- ego %*% adj + ego
-        ego[ego > 0] <- 1
-        egoMaster[ego == 1 & egoMaster == 0] <- i
+        ego[which(ego > 0)] <- 1
+        egoMaster[which(ego == 1 & egoMaster == 0)] <- i
     }
+    
+    ## calculate empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2
+    xMean <- mean(Lambda$spin)
+    
+    lapply(unique(Lambda$spp), function(sp) {
+        dat <- Lambda[Lambda$spp == sp, ]
+        lapply(1:round(sqrt(ncell(r)) / 2), function(d) {
+            groups <- which(egoMaster == d, arr.ind = TRUE)
+            tapply(dat$spin[match(groups[, 1], dat$cell)], groups[, 2], 
+                   function(spin) {
+                       temp <- outer(spin, spin, '*')
+                       mean(temp[lower.tri(temp)])
+                   })
+        })
+    })
     
 }
 
