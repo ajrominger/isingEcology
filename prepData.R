@@ -1,6 +1,7 @@
 library(raster)
 library(socorro)
 library(Matrix)
+library(parallel)
 
 setwd('~/Dropbox/Research/isingEcology')
 
@@ -30,11 +31,12 @@ prepDataIsing <- function(path) {
     cellz <- cellFromXY(r, xy = x[, c('x', 'y')])
     cellz <- factor(cellz, levels = 1:ncell(r))
     LambdaMat <- tidy2mat(cellz, x$spp, x$count)
-    LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ...this should be rare
+    LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
     LambdaMat[LambdaMat == 0] <- -1
     Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
                          cell = rep(rownames(LambdaMat), ncol(LambdaMat)), 
-                         spin = as.vector(LambdaMat))
+                         spin = as.vector(LambdaMat), 
+                         stringsAsFactors = FALSE)
     
     ## create adjacency matrix that indicates adjacent cells
     adj <- bandSparse(ncell(r), k = c(-ncol(r), -1, 0, 1, ncol(r)))
@@ -42,96 +44,48 @@ prepDataIsing <- function(path) {
     adj[(1:(nrow(r) - 1)) * ncol(r) + 1, (1:nrow(r)) * ncol(r)] <- FALSE
     
     ## `ego` contains the ego graph for successive distances from the focal node
-    ego <- Diagonal(ncell(r)) %*% adj + adj
-    ego[which(ego > 0)] <- 1
-    
-    ## `egoMaster` will contain all ego graphs according to the rule:
-    ## ego graph of distance d = egoMaster <= d
-    egoMaster <- ego
-    
-    ## higher order neighborhoods are a recursion of:
-    ## A2 = A1 %*% A1 + A1; for d = 2
-    ## A3 = A2 %*% A1 + A2; for d = 3, etc...
-    for(i in 2:round(sqrt(ncell(r)) / 2)) {
-        ego <- ego %*% adj + ego
-        ego[which(ego > 0)] <- 1
-        egoMaster[which(ego == 1 & egoMaster == 0)] <- i
-    }
+    ego <- adj
     
     ## calculate empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2
-    xMean <- mean(Lambda$spin)
-    
-    lapply(unique(Lambda$spp), function(sp) {
-        dat <- Lambda[Lambda$spp == sp, ]
-        lapply(1:round(sqrt(ncell(r)) / 2), function(d) {
-            groups <- which(egoMaster == d, arr.ind = TRUE)
-            tapply(dat$spin[match(groups[, 1], dat$cell)], groups[, 2], 
-                   function(spin) {
-                       temp <- outer(spin, spin, '*')
-                       mean(temp[lower.tri(temp)])
-                   })
+    maxD <- round(sqrt(ncell(r)) / 2)
+    cfun <- lapply(1:maxD, function(i) {
+        ## use the current ego matrix to find neighbors
+        groups <- which(ego >= 1, arr.ind = TRUE)
+        print(head(groups))
+        
+        ## calculate cor fun for each spp
+        out <- mclapply(unique(Lambda$spp), mc.cores = 6, FUN = function(sp) {
+            dat <- Lambda[Lambda$spp == sp, ]
+            spinMean <- mean(dat$spin)
+            
+            cr <- tapply(dat$spin[match(groups[, 1], dat$cell)], groups[, 2], 
+                         function(spin) {
+                             temp <- outer(spin, spin, '*')
+                             mean(temp[lower.tri(temp)])
+                         })
+            cr <- cr - spinMean^2
+            
+            return(c(m = mean(cr), 
+                     lo = quantile(cr, 0.025, names = FALSE), 
+                     hi = quantile(cr, 0.975, names = FALSE)))
         })
+        out <- do.call(rbind, out)
+        
+        
+        ## update the ego matrix in the parent frame for the next iteration
+        ego <<- ego %*% adj + ego
+        
+        ## return output
+        return(out)
     })
     
+    cfun <- data.frame(scale = rep(1:maxD, each = length(unique(Lambda$spp))), 
+                       spp = unique(Lambda$spp),
+                       do.call(rbind, cfun))
+    
+    
+    return(list(Lambda = Lambda, cfun = cfun))
 }
 
-prepDataIsing('../data/stri/UCSC.csv')
-
-
-
-## function to traverse an edge list, returning all nodes within `d` links
-## as applied to spatial occupancy
-##
-## DOESN'T WORK, SEE BELOW USING `EGO`
-##
-#' @param el the edge list to be traversed
-#' @param d the desired number of edges between nodes
-#' @return a new edge list, now with all nodes that are `d` away from the nodes in column `from`
-traverceEL <- function(el, d) {
-    if(d == 1) {
-        return(el)
-    } else {
-        newEL <- lapply(1:nrow(el), function(i) cbind(el[i, 1], el[el[i, 2] == el[, 1], 2]))
-        newEL <- do.call(rbind(newEL))
-        newEL <- newEL[newEL[, 1] != newEL[, 2]]
-        newEL <- newEL[!duplicated(newEL), ]
-        newEL <- rbind(el, newEL)
-        return(traverceEL(newEL, d - 1))
-    }
-}
-
-bla <- traverceEL(edges, 2)
-
-
-matrix(1:9, nrow = 3, byrow = TRUE)
-el <- matrix(c(1, 2,
-               1, 4, 
-               2, 1, 
-               2, 3, 
-               2, 5, 
-               3, 2, 
-               3, 6, 
-               4, 1,
-               4, 5, 
-               4, 7, 
-               5, 2, 
-               5, 4, 
-               5, 6,
-               5, 8,
-               6, 3, 
-               6, 5, 
-               6, 9,
-               7, 4, 
-               7, 8, 
-               8, 7, 
-               8, 5, 
-               8, 9, 
-               9, 6, 
-               9, 8), ncol = 2, byrow = TRUE)
-
-foo <- graph_from_edgelist(el)
-plot(foo)
-as_edgelist(graph_from_adj_list(ego(foo, 2)))
-
-
-
+isingUCSC <- prepDataIsing('../data/stri/UCSC.csv')
+isingPASO <- prepDataIsing('../data/stri/PASO.csv')
