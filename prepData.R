@@ -34,9 +34,15 @@ prepDataIsing <- function(path) {
     LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
     LambdaMat[LambdaMat == 0] <- -1
     Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
-                         cell = rep(rownames(LambdaMat), ncol(LambdaMat)), 
+                         cell = as.numeric(rep(rownames(LambdaMat), ncol(LambdaMat))), 
                          spin = as.vector(LambdaMat), 
                          stringsAsFactors = FALSE)
+    
+    Lambda <- cbind(Lambda, xyFromCell(r, Lambda$cell))
+    
+    ## loop over spp, cells, distances and calculate cor fun
+    # foo <- Lambda$x <= 0.5 + 1 & Lambda$x >= 0.5 - 1 &
+    #     Lambda$y <= 299.5 + 1 & Lambda$y >= 299.5 - 1
     
     ## create adjacency matrix that indicates adjacent cells
     adj <- bandSparse(ncell(r), k = c(-ncol(r), -1, 0, 1, ncol(r)))
@@ -46,12 +52,21 @@ prepDataIsing <- function(path) {
     ## `ego` contains the ego graph for successive distances from the focal node
     ego <- adj
     
+    ## `theseCells` contains a subset of cells from which to grow out the neighborhoods
+    ## selected to be toward the center of the plot to avoid boundary effects
+    theseCells <- Lambda$cell[Lambda$x <= 0.75 * max(Lambda$x) &
+                                  Lambda$x >= 0.25 * max(Lambda$x) &
+                                  Lambda$y <= 0.75 * max(Lambda$y) & 
+                                  Lambda$x >= 0.25 * max(Lambda$y)]
+    theseCells <- unique(theseCells)
+    if(length(theseCells) > 200) theseCells <- sample(theseCells, 200)
+    
     ## calculate empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2
     maxD <- round(sqrt(ncell(r)) / 2)
     cfun <- lapply(1:maxD, function(i) {
         ## use the current ego matrix to find neighbors
         groups <- which(ego >= 1, arr.ind = TRUE)
-        print(head(groups))
+        groups <- groups[groups[, 2] %in% theseCells, ]
         
         ## calculate cor fun for each spp
         out <- mclapply(unique(Lambda$spp), mc.cores = 6, FUN = function(sp) {
@@ -71,7 +86,6 @@ prepDataIsing <- function(path) {
         })
         out <- do.call(rbind, out)
         
-        
         ## update the ego matrix in the parent frame for the next iteration
         ego <<- ego %*% adj + ego
         
@@ -88,4 +102,4 @@ prepDataIsing <- function(path) {
 }
 
 isingUCSC <- prepDataIsing('../data/stri/UCSC.csv')
-isingPASO <- prepDataIsing('../data/stri/PASO.csv')
+# isingPASO <- prepDataIsing('../data/stri/PASO.csv')
