@@ -9,36 +9,14 @@ setwd('~/Dropbox/Research/isingEcology')
 ## function to generate data for testing/fitting/understanding ising model 
 ## as applied to spatial occupancy
 #' @param path the path to the raw data file to be loaded and processed
-#' @return a list with components:
+#' @param writePath the path where processed data re to be written
+#' @return writes two datafiles:
 #' \describe{
-#'   \item{\code{Lambda}}{a data.frame describing the Ising latice by columns `spp`, `cell`, `spin`}
-#'   \item{\code{edgeList}}{a matrix describing the edges connecting neighbors in the latice}
-#'   \item{\code{corFun}}{the empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2}
+#'   \item{\code{*Lambda}}{a data.frame describing the Ising latice by columns `spp`, `cell`, `spin`}
+#'   \item{\code{*corFun}}{the empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2}
 #' }
 
-
-f <- factor(c(1, 2, 4), levels = 1:4)
-dat <- data.frame(spp = letters[1:3], count = rep(1, 3))
-
-
-fillSpins <- function(cellz, spp, count) {
-    dat <- data.frame(spp = spp, count = count)
-    
-    rawSiteSpp <- mclapply(split(dat, cellz), mc.cores = 6, FUN = function(x) {
-        lapply(split(x$count, x$spp), sum)
-    })
-    
-    rawSiteSpp <- unlist(rawSiteSpp)
-    rawSiteSpp[rawSiteSpp == 0] <- -1
-    rawSiteSpp[rawSiteSpp > 1] <- 1
-    
-    return(data.frame(cell = rep(levels(cellz), each = nlevels(dat$spp)), 
-                      spp = rep(levels(dat$spp), nlevels(cellz)), 
-                      spin = rawSiteSpp, 
-                      stringsAsFactors = FALSE))
-}
-
-prepDataIsing <- function(path) {
+prepDataIsing <- function(path, writePath) {
     ## take only most recent census
     x <- read.csv(path, as.is = TRUE)
     x <- x[x$year == max(x$year), ]
@@ -52,22 +30,19 @@ prepDataIsing <- function(path) {
     ## create a df with columns of spp, cellID, spin
     cellz <- cellFromXY(r, xy = x[, c('x', 'y')])
     cellz <- factor(cellz, levels = 1:ncell(r))
-    # LambdaMat <- tidy2mat(cellz, x$spp, x$count)
-    # LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
-    # LambdaMat[LambdaMat == 0] <- -1
-    # Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
-    #                      cell = as.numeric(rep(rownames(LambdaMat), ncol(LambdaMat))), 
-    #                      spin = as.vector(LambdaMat), 
-    #                      stringsAsFactors = FALSE)
+    
     browser()
-    Lambda <- fillSpins(cellz, x$spp, x$count)
+    LambdaMat <- tidy2mat(cellz, x$spp, x$count)
+    LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
+    LambdaMat[LambdaMat == 0] <- -1
+    Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
+                         cell = as.numeric(rep(rownames(LambdaMat), ncol(LambdaMat))), 
+                         spin = as.vector(LambdaMat), 
+                         stringsAsFactors = FALSE)
+    
     
     ## add xy coords for each cell
     Lambda <- cbind(Lambda, xyFromCell(r, Lambda$cell))
-    
-    ## loop over spp, cells, distances and calculate cor fun
-    # foo <- Lambda$x <= 0.5 + 1 & Lambda$x >= 0.5 - 1 &
-    #     Lambda$y <= 299.5 + 1 & Lambda$y >= 299.5 - 1
     
     ## create adjacency matrix that indicates adjacent cells
     adj <- bandSparse(ncell(r), k = c(-ncol(r), -1, 0, 1, ncol(r)))
@@ -92,39 +67,77 @@ prepDataIsing <- function(path) {
         ## use the current ego matrix to find neighbors
         groups <- which(ego >= 1, arr.ind = TRUE)
         groups <- groups[groups[, 2] %in% theseCells, ]
-        
+
         ## calculate cor fun for each spp
         out <- mclapply(unique(Lambda$spp), mc.cores = 6, FUN = function(sp) {
             dat <- Lambda[Lambda$spp == sp, ]
             spinMean <- mean(dat$spin)
-            
-            cr <- tapply(dat$spin[match(groups[, 1], dat$cell)], groups[, 2], 
+
+            cr <- tapply(dat$spin[match(groups[, 1], dat$cell)], groups[, 2],
                          function(spin) {
                              temp <- outer(spin, spin, '*')
                              mean(temp[lower.tri(temp)])
                          })
             cr <- cr - spinMean^2
-            
-            return(c(m = mean(cr), 
-                     lo = quantile(cr, 0.025, names = FALSE), 
+
+            return(c(m = mean(cr),
+                     lo = quantile(cr, 0.025, names = FALSE),
                      hi = quantile(cr, 0.975, names = FALSE)))
         })
         out <- do.call(rbind, out)
-        
+
         ## update the ego matrix in the parent frame for the next iteration
         ego <<- ego %*% adj + ego
-        
+
         ## return output
         return(out)
     })
-    
-    cfun <- data.frame(scale = rep(1:maxD, each = length(unique(Lambda$spp))), 
+
+    cfun <- data.frame(scale = rep(1:maxD, each = length(unique(Lambda$spp))),
                        spp = unique(Lambda$spp),
                        do.call(rbind, cfun))
     
+    ## write output
+    outPath <- file.path(writePath, gsub('.*/|.csv', '', path))
     
-    return(list(Lambda = Lambda, cfun = cfun))
+    write.csv(Lambda, file = paste0(outPath, '_Lambda.csv'), row.names = FALSE)
+    write.csv(cfun, file = paste0(outPath, '_corFun.csv'), row.names = FALSE)
 }
 
-# isingUCSC <- prepDataIsing('../data/stri/UCSC.csv')
-isingPASO <- prepDataIsing('../data/stri/PASO.csv')
+## a faster (parallel) version of tapply
+tapply2 <- function(X, INDEX, FUN = NULL, ..., default = NA, simplify = TRUE) {
+    nI <- length(INDEX)
+    namelist <- lapply(INDEX, levels)
+    extent <- lengths(namelist, use.names = FALSE)
+    cumextent <- cumprod(extent)
+    storage.mode(cumextent) <- "integer"
+    ngroup <- cumextent[nI]
+    group <- as.integer(INDEX[[1L]])
+    for (i in 2L:nI) {
+        group <- group + cumextent[i - 1L] * (as.integer(INDEX[[i]]) - 1L)
+    }
+    levels(group) <- as.character(seq_len(ngroup))
+    class(group) <- "factor"
+    ans <- split(X, group)
+    names(ans) <- NULL
+    index <- as.logical(lengths(ans))
+    
+    ans <- mclapply(X = ans[index], mc.cores = 6, FUN = FUN, ...)
+    ans <- unlist(ans, recursive = FALSE, use.names = FALSE)
+    
+    ansmat <- array(vector(typeof(ans)), dim = extent, dimnames = namelist)
+    
+    ansmat[index] <- ans
+    
+    return(ansmat)
+}
+
+## set tapply to parallel version
+foo <- base::tapply
+tapply <- tapply2
+
+## run and then re-set tapply
+prepDataIsing('../data/stri/UCSC.csv', 'data')
+prepDataIsing('../data/stri/PASO.csv', 'data')
+
+tapply <- foo
