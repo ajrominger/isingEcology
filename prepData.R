@@ -16,6 +16,28 @@ setwd('~/Dropbox/Research/isingEcology')
 #'   \item{\code{corFun}}{the empirical correlation function defined as c(d) = <x_i * x_j> - <x>^2}
 #' }
 
+
+f <- factor(c(1, 2, 4), levels = 1:4)
+dat <- data.frame(spp = letters[1:3], count = rep(1, 3))
+
+
+fillSpins <- function(cellz, spp, count) {
+    dat <- data.frame(spp = spp, count = count)
+    
+    rawSiteSpp <- mclapply(split(dat, cellz), mc.cores = 6, FUN = function(x) {
+        lapply(split(x$count, x$spp), sum)
+    })
+    
+    rawSiteSpp <- unlist(rawSiteSpp)
+    rawSiteSpp[rawSiteSpp == 0] <- -1
+    rawSiteSpp[rawSiteSpp > 1] <- 1
+    
+    return(data.frame(cell = rep(levels(cellz), each = nlevels(dat$spp)), 
+                      spp = rep(levels(dat$spp), nlevels(cellz)), 
+                      spin = rawSiteSpp, 
+                      stringsAsFactors = FALSE))
+}
+
 prepDataIsing <- function(path) {
     ## take only most recent census
     x <- read.csv(path, as.is = TRUE)
@@ -30,14 +52,17 @@ prepDataIsing <- function(path) {
     ## create a df with columns of spp, cellID, spin
     cellz <- cellFromXY(r, xy = x[, c('x', 'y')])
     cellz <- factor(cellz, levels = 1:ncell(r))
-    LambdaMat <- tidy2mat(cellz, x$spp, x$count)
-    LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
-    LambdaMat[LambdaMat == 0] <- -1
-    Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
-                         cell = as.numeric(rep(rownames(LambdaMat), ncol(LambdaMat))), 
-                         spin = as.vector(LambdaMat), 
-                         stringsAsFactors = FALSE)
+    # LambdaMat <- tidy2mat(cellz, x$spp, x$count)
+    # LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
+    # LambdaMat[LambdaMat == 0] <- -1
+    # Lambda <- data.frame(spp = rep(colnames(LambdaMat), each = nrow(LambdaMat)), 
+    #                      cell = as.numeric(rep(rownames(LambdaMat), ncol(LambdaMat))), 
+    #                      spin = as.vector(LambdaMat), 
+    #                      stringsAsFactors = FALSE)
+    browser()
+    Lambda <- fillSpins(cellz, x$spp, x$count)
     
+    ## add xy coords for each cell
     Lambda <- cbind(Lambda, xyFromCell(r, Lambda$cell))
     
     ## loop over spp, cells, distances and calculate cor fun
@@ -101,5 +126,5 @@ prepDataIsing <- function(path) {
     return(list(Lambda = Lambda, cfun = cfun))
 }
 
-isingUCSC <- prepDataIsing('../data/stri/UCSC.csv')
-# isingPASO <- prepDataIsing('../data/stri/PASO.csv')
+# isingUCSC <- prepDataIsing('../data/stri/UCSC.csv')
+isingPASO <- prepDataIsing('../data/stri/PASO.csv')
