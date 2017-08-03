@@ -31,7 +31,6 @@ prepDataIsing <- function(path, writePath) {
     cellz <- cellFromXY(r, xy = x[, c('x', 'y')])
     cellz <- factor(cellz, levels = 1:ncell(r))
     
-    browser()
     LambdaMat <- tidy2mat(cellz, x$spp, x$count)
     LambdaMat[LambdaMat > 1] <- 1 # just incase some cells have more than 1 individ
     LambdaMat[LambdaMat == 0] <- -1
